@@ -10861,6 +10861,9 @@ int lru[60][max_lru];  // 0 initialized
 const bool use_lru = true;
 const int top_k = 8;
 
+static ggml_mutex_t argsort_mutex;
+static bool argsort_mutex_initialized = false;
+
 static void ggml_compute_forward_argsort_f32(
     const struct ggml_compute_params * params,
     struct ggml_tensor * dst) {
@@ -10875,7 +10878,10 @@ static void ggml_compute_forward_argsort_f32(
     const int ith = params->ith;
     const int nth = params->nth;
 
-
+    if (!argsort_mutex_initialized) {
+        ggml_mutex_init(&argsort_mutex);
+        argsort_mutex_initialized = true;
+    }
 
     const int64_t nr = ggml_nrows(src0);
     //printf("ggml_compute_forward_argsort: src0->ne[0] = %d, dst->ne[0] = %d, dst = %p, src0 = %p, ith = %d, nth = %d, nr = %d, current_layer = %d\n", src0->ne[0], dst->ne[0], (void*)dst, (void*)src0, ith, nth, nr, current_layer);
@@ -10903,6 +10909,7 @@ static void ggml_compute_forward_argsort_f32(
             }
         }
         if (use_lru) {
+            ggml_mutex_lock(&argsort_mutex);
             // now that dst_data is sorted, update lru for the first 8 elements
             bool loaded = false;
             for (int64_t j = 0; j < top_k; j++) {
@@ -10935,11 +10942,12 @@ static void ggml_compute_forward_argsort_f32(
                     }
                 }
             }
+            ggml_mutex_unlock(&argsort_mutex);
         }
     }
 
-
-     if (ith == 0) {
+    if (ith == 0) {
+        ggml_mutex_lock(&argsort_mutex);
         if (current_layer0 == 0) {
             int32_t *dst_data = (int32_t *)dst->data;
             const float *src_data = (float *)src0->data;
@@ -10964,6 +10972,7 @@ static void ggml_compute_forward_argsort_f32(
         if (current_layer == 58) {
             current_layer = 0;
         }
+        ggml_mutex_unlock(&argsort_mutex);
     }
 }
 
