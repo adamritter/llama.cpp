@@ -10854,6 +10854,8 @@ static void ggml_compute_forward_timestep_embedding(
 
 // ggml_compute_forward_argsort
 
+int current_layer = 0;
+
 static void ggml_compute_forward_argsort_f32(
     const struct ggml_compute_params * params,
     struct ggml_tensor * dst) {
@@ -10864,10 +10866,15 @@ static void ggml_compute_forward_argsort_f32(
 
     GGML_ASSERT(nb0 == sizeof(float));
 
+
     const int ith = params->ith;
     const int nth = params->nth;
 
+
+
     const int64_t nr = ggml_nrows(src0);
+    //printf("ggml_compute_forward_argsort: src0->ne[0] = %d, dst->ne[0] = %d, dst = %p, src0 = %p, ith = %d, nth = %d, nr = %d, current_layer = %d\n", src0->ne[0], dst->ne[0], (void*)dst, (void*)src0, ith, nth, nr, current_layer);
+
 
     enum ggml_sort_order order = (enum ggml_sort_order) ggml_get_op_params_i32(dst, 0);
 
@@ -10889,6 +10896,33 @@ static void ggml_compute_forward_argsort_f32(
                     dst_data[k] = tmp;
                 }
             }
+        }
+    }
+
+     if (ith == 0) {
+        if (current_layer == 0) {
+            int32_t *dst_data = (int32_t *)dst->data;
+            const float *src_data = (float *)src0->data;
+            // Print top 8
+            printf("\ntop8.push([");
+            for (int i = 0; i < 8; i++) {
+                printf("%d, ", dst_data[i]);
+            }
+            printf("]);\n");
+            printf("top8probs.push([");
+            for (int i = 0; i < 8; i++) {
+               printf("%f, ", src_data[dst_data[i]]);
+            }
+            printf("]);\n");
+            printf("top8src_data.push([");
+            for (int i = 0; i < ne0; i++) {
+               printf("%f, ", src_data[i]);
+            }
+            printf("]);\n");
+        }
+        current_layer++;
+        if (current_layer == 58) {
+            current_layer = 0;
         }
     }
 }
