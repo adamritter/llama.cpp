@@ -10856,6 +10856,11 @@ static void ggml_compute_forward_timestep_embedding(
 
 int current_layer = 0;
 
+const int max_lru = 128;
+int lru[60][max_lru];  // 0 initialized
+const bool use_lru = true;
+const int top_k = 8;
+
 static void ggml_compute_forward_argsort_f32(
     const struct ggml_compute_params * params,
     struct ggml_tensor * dst) {
@@ -10877,7 +10882,7 @@ static void ggml_compute_forward_argsort_f32(
 
 
     enum ggml_sort_order order = (enum ggml_sort_order) ggml_get_op_params_i32(dst, 0);
-
+    int current_layer0 = current_layer;
     for (int64_t i = ith; i < nr; i += nth) {
         int32_t * dst_data = (int32_t *)((char *) dst->data + i*nb1);
         const float * src_data = (float *)((char *) src0->data + i*nb01);
@@ -10897,10 +10902,45 @@ static void ggml_compute_forward_argsort_f32(
                 }
             }
         }
+        if (use_lru) {
+            // now that dst_data is sorted, update lru for the first 8 elements
+            bool loaded = false;
+            for (int64_t j = 0; j < top_k; j++) {
+                int data = dst_data[j];
+                bool found = false;
+                for (int64_t k = 0; k < max_lru; k++) {
+                    if (lru[current_layer0][k] == 0 || lru[current_layer0][k] == data + 1) {
+                        for (int l = k; l > j; l--) {
+                            lru[current_layer0][l] = lru[current_layer0][l-1];
+                        }
+                        lru[current_layer0][j] = data + 1;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    if (loaded) {
+                        // just skip, put at the end of dst_data
+                        for (int l = j; l < top_k - 1; l++) {
+                            dst_data[l] = dst_data[l+1];
+                        }
+                        dst_data[top_k - 1] = data;
+                        j--;  // retry
+                    } else {
+                        for (int l = max_lru - 1; l > j; l--) {
+                            lru[current_layer0][l] = lru[current_layer0][l-1];
+                        }
+                        lru[current_layer0][j] = data + 1;
+                        loaded = true;
+                    }
+                }
+            }
+        }
     }
 
+
      if (ith == 0) {
-        if (current_layer == 0) {
+        if (current_layer0 == 0) {
             int32_t *dst_data = (int32_t *)dst->data;
             const float *src_data = (float *)src0->data;
             // Print top 8
