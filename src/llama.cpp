@@ -461,6 +461,15 @@ llama_expert_gating_func_type gating_op,
         cb(selection_probs, "ffn_moe_probs_biased", il);
     }
 
+    // selection_probs = ggml_view_2d(
+    //     ctx,
+    //     selection_probs,
+    //     128,
+    //     n_tokens,
+    //     selection_probs->nb[0],  // stride for each "row"
+    //     0                        // offset in bytes into the parent tensor
+    // );
+
     // select experts
     ggml_tensor * selected_experts = ggml_top_k(ctx, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
     cb(selected_experts->src[0], "ffn_moe_argsort", il);
