@@ -36,3 +36,11 @@ build/bin/llama-perplexity --model ~/Downloads/deepseek/DeepSeek-R1-UD-IQ1_S-000
  10 tps 128 MoEs in mem
 
  10 tps looks good enough, now let's see how to implement max 1 new expert per token
+
+
+Next step is to go down from 10 tps to for example 5 tps (half of time is loading data from SSD in that case), but improve perplexity
+
+build/bin/llama-cli --model ~/Downloads/deepseek/DeepSeek-R1-UD-IQ1_S-00001-of-00003.gguf --cache-type-k q4_0   --threads 12 --prio 2   --temp 0.6 --ctx-size 8192 --seed 3407 --n-gpu-layers 30 -no-cnv  --prompt "<｜User｜>Find the degree for the given field extension Q(sqrt(2), sqrt(3), sqrt(18)) over Q.. Choices A:0, B:4, C:2, D:6. Just answer A, B, C or D and nothing else.<｜Assistant｜>" --ctx-size 512 --override-kv deepseek2.expert_used_count=int:3
+
+
+iostat -d -w 1

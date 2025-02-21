@@ -10911,7 +10911,7 @@ static void ggml_compute_forward_argsort_f32(
         if (use_lru) {
             ggml_mutex_lock(&argsort_mutex);
             // now that dst_data is sorted, update lru for the first 8 elements
-            bool loaded = false;
+            bool loaded = true;  // loaded = false is original algorithm, loaded = true prevents loading after the 128 slots are filled
             for (int64_t j = 0; j < top_k; j++) {
                 int data = dst_data[j];
                 bool found = false;
@@ -10928,10 +10928,10 @@ static void ggml_compute_forward_argsort_f32(
                 if (!found) {
                     if (loaded) {
                         // just skip, put at the end of dst_data
-                        for (int l = j; l < top_k - 1; l++) {
+                        for (int l = j; l < ne0 - 1; l++) {
                             dst_data[l] = dst_data[l+1];
                         }
-                        dst_data[top_k - 1] = data;
+                        dst_data[ne0 - 1] = data;
                         j--;  // retry
                     } else {
                         for (int l = max_lru - 1; l > j; l--) {
@@ -10944,9 +10944,13 @@ static void ggml_compute_forward_argsort_f32(
             }
             ggml_mutex_unlock(&argsort_mutex);
         }
+
     }
 
-    if (ith == 0) {
+
+    const bool log = false;
+
+    if (log && ith == 0) {
         ggml_mutex_lock(&argsort_mutex);
         if (current_layer0 == 0) {
             int32_t *dst_data = (int32_t *)dst->data;
