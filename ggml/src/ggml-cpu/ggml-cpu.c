@@ -10857,12 +10857,13 @@ static void ggml_compute_forward_timestep_embedding(
 int current_layer = 0;
 
 const int max_lru = 128;
-int lru[60][max_lru];  // 0 initialized
-const bool use_lru = true;
+int lru[58][max_lru];  // 0 initialized
+const bool use_lru = false;
 const int top_k = 8;
 
 static ggml_mutex_t argsort_mutex;
 static bool argsort_mutex_initialized = false;
+static int count = 0;
 
 static void ggml_compute_forward_argsort_f32(
     const struct ggml_compute_params * params,
@@ -10910,8 +10911,11 @@ static void ggml_compute_forward_argsort_f32(
         }
         if (use_lru) {
             ggml_mutex_lock(&argsort_mutex);
+            if (current_layer0 == 0) {
+                count++;
+            }
             // now that dst_data is sorted, update lru for the first 8 elements
-            bool loaded = true;  // loaded = false is original algorithm, loaded = true prevents loading after the 128 slots are filled
+            bool loaded = count % 2 == 0;  // loaded = false is original algorithm, loaded = true prevents loading after the 128 slots are filled
             for (int64_t j = 0; j < top_k; j++) {
                 int data = dst_data[j];
                 bool found = false;

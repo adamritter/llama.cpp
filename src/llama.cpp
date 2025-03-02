@@ -414,6 +414,66 @@ static struct ggml_tensor * llm_build_ffn(
     return cur;
 }
 
+const bool use_lru = true;
+const int max_lru = 128;
+int token_count = 0;
+// 2.6 t/s -> 4.6 t/s true, 3.55 fals
+// 3.6 t/s %2==0, 5.1 t/s true
+// TODO:
+// - mlock
+// - call custom_fn from Metal
+static void custom_fn(struct ggml_tensor * dst, const struct ggml_tensor * src, int ith, int nth, void * userdata) {
+    int * clru = (int *)userdata;
+    // Only print once from the first thread to avoid duplicate messages
+    if (ith == 0) {
+        // 26: I32
+        //printf("%d %d %d %d %d %d %d %d %d\n", ith, nth, src->ne[0], src->ne[1], src->ne[2], src->type,
+        //    src->nb[0], src->nb[1], src->nb[2]);
+        if (use_lru) {
+            int * dst_data = (int *)dst->data;
+            int top_k = 8;
+            int ne0 = src->ne[0];
+
+            // dst_data is sorted, update lru for the first 8 elements
+            // bool loaded = count % 2 == 0;  // loaded = false is original algorithm, loaded = true prevents loading after the 128 slots are filled
+            bool loaded = true; // token_count % 2 == 0;
+            for (int64_t j = 0; j < top_k; j++) {
+                int data = dst_data[j];
+                bool found = false;
+                for (int64_t k = 0; k < max_lru; k++) {
+                    if (clru[k] == 0 || clru[k] == data + 1) {
+                        for (int l = k; l > j; l--) {
+                            clru[l] = clru[l-1];
+                        }
+                        clru[j] = data + 1;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    if (loaded) {
+                        // just skip, put at the end of dst_data
+                        for (int l = j; l < ne0 - 1; l++) {
+                            dst_data[l] = dst_data[l+1];
+                        }
+                        dst_data[ne0 - 1] = data;
+                        j--;  // retry
+                    } else {
+                        for (int l = max_lru - 1; l > j; l--) {
+                            clru[l] = clru[l-1];
+                        }
+                        clru[j] = data + 1;
+                        loaded = true;
+                    }
+                }
+            }
+        }
+
+    }
+}
+
+int lru[61][128];  // 0 initialized, max_lru = 128, il: 3..60
+
 static struct ggml_tensor * llm_build_moe_ffn(
         struct ggml_context * ctx,
        struct llama_context & lctx,
@@ -432,6 +492,7 @@ static struct ggml_tensor * llm_build_moe_ffn(
 llama_expert_gating_func_type gating_op,
          const llm_build_cb & cb,
                         int   il) {
+    //printf("up_exps: %p, gate_exps: %p, down_exps: %p, il: %d\n", up_exps, gate_exps, down_exps, il);
     int64_t n_embd = cur->ne[0];
     int64_t n_tokens = cur->ne[1];
 
@@ -474,8 +535,22 @@ llama_expert_gating_func_type gating_op,
     }
 
     // select experts
-    ggml_tensor * selected_experts = ggml_top_k(ctx, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
-    cb(selected_experts->src[0], "ffn_moe_argsort", il);
+    // Inline the ggml_top_k function
+    struct ggml_tensor * selected_experts_argsort = ggml_argsort(ctx, selection_probs, GGML_SORT_ORDER_DESC);
+    cb(selected_experts_argsort, "ffn_moe_argsort", il);
+    // Create a custom op that prints a debug message
+    selected_experts_argsort = ggml_map_custom1_inplace(
+        ctx,
+        selected_experts_argsort,
+        custom_fn,
+        1,
+        (void *) &lru[il][0]
+    );
+
+    struct ggml_tensor * selected_experts = ggml_view_4d(ctx, selected_experts_argsort,
+                n_expert_used, selected_experts_argsort->ne[1], selected_experts_argsort->ne[2], selected_experts_argsort->ne[3],
+                selected_experts_argsort->nb[1], selected_experts_argsort->nb[2], selected_experts_argsort->nb[3],
+                0);
     cb(selected_experts, "ffn_moe_topk", il);
 
     ggml_tensor * weights = ggml_get_rows(ctx,
@@ -6387,6 +6462,7 @@ struct llm_build_context {
     }
 
     struct ggml_cgraph * build_deepseek2() {
+        token_count++;
         struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, model.max_nodes(), false);
 
         // mutable variable, needed during the last layer of the computation to skip unused tokens
