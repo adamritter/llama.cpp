@@ -26,6 +26,13 @@
 #include <ctime>
 #include <functional>
 
+#if defined(_WIN32)
+    #include <windows.h>
+    #define mlock(addr, len) VirtualLock(addr, len)
+#else
+    #include <sys/mman.h>
+#endif
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
@@ -417,31 +424,55 @@ static struct ggml_tensor * llm_build_ffn(
 const bool use_lru = true;
 const int max_lru = 128;
 int token_count = 0;
+
+struct custom_fn_data {
+    int * clru;
+    struct ggml_tensor * up_exps;
+    struct ggml_tensor * gate_exps;
+    struct ggml_tensor * down_exps;
+};
 // 2.6 t/s -> 4.6 t/s true, 3.55 fals
 // 3.6 t/s %2==0, 5.1 t/s true
+// now 6 t/s for all?
 // TODO:
-// - mlock
+// - mlock (doens't work)
 // - call custom_fn from Metal
+const bool use_mlock = false; // 4.92 or 6.4 :) without mlock, 5.5 with mlock, 3.5 without use_lru
 static void custom_fn(struct ggml_tensor * dst, const struct ggml_tensor * src, int ith, int nth, void * userdata) {
-    int * clru = (int *)userdata;
+    custom_fn_data * data = (custom_fn_data *)userdata;
+    int * clru = data->clru;
+    struct ggml_tensor * up_exps = data->up_exps;
+    struct ggml_tensor * gate_exps = data->gate_exps;
+    struct ggml_tensor * down_exps = data->down_exps;
     // Only print once from the first thread to avoid duplicate messages
     if (ith == 0) {
         // 26: I32
         //printf("%d %d %d %d %d %d %d %d %d\n", ith, nth, src->ne[0], src->ne[1], src->ne[2], src->type,
         //    src->nb[0], src->nb[1], src->nb[2]);
+        assert(up_exps->ne[2] == 256);
+        assert(gate_exps->ne[2] == 256);
+        assert(down_exps->ne[2] == 256);
+
         if (use_lru) {
+            // 256 experts are up_exps->nb[2] apart
+
             int * dst_data = (int *)dst->data;
             int top_k = 8;
             int ne0 = src->ne[0];
 
             // dst_data is sorted, update lru for the first 8 elements
             // bool loaded = count % 2 == 0;  // loaded = false is original algorithm, loaded = true prevents loading after the 128 slots are filled
-            bool loaded = true; // token_count % 2 == 0;
+            bool loaded = token_count % 2 == 0;
             for (int64_t j = 0; j < top_k; j++) {
                 int data = dst_data[j];
                 bool found = false;
                 for (int64_t k = 0; k < max_lru; k++) {
                     if (clru[k] == 0 || clru[k] == data + 1) {
+                        if (use_mlock && clru[k] == 0) {
+                            mlock((char *)up_exps->data + data * up_exps->nb[2], up_exps->nb[2]);
+                            mlock((char *)gate_exps->data + data * gate_exps->nb[2], gate_exps->nb[2]);
+                            mlock((char *)down_exps->data + data * down_exps->nb[2], down_exps->nb[2]);
+                        }
                         for (int l = k; l > j; l--) {
                             clru[l] = clru[l-1];
                         }
@@ -459,6 +490,14 @@ static void custom_fn(struct ggml_tensor * dst, const struct ggml_tensor * src, 
                         dst_data[ne0 - 1] = data;
                         j--;  // retry
                     } else {
+                        if (use_mlock) {
+                            munlock((char *)up_exps->data + clru[max_lru - 1] * up_exps->nb[2], up_exps->nb[2]);
+                            munlock((char *)gate_exps->data + clru[max_lru - 1] * gate_exps->nb[2], gate_exps->nb[2]);
+                            munlock((char *)down_exps->data + clru[max_lru - 1] * down_exps->nb[2], down_exps->nb[2]);
+                            mlock((char *)up_exps->data + data * up_exps->nb[2], up_exps->nb[2]);
+                            mlock((char *)gate_exps->data + data * gate_exps->nb[2], gate_exps->nb[2]);
+                            mlock((char *)down_exps->data + data * down_exps->nb[2], down_exps->nb[2]);
+                        }
                         for (int l = max_lru - 1; l > j; l--) {
                             clru[l] = clru[l-1];
                         }
@@ -472,7 +511,52 @@ static void custom_fn(struct ggml_tensor * dst, const struct ggml_tensor * src, 
     }
 }
 
+const int top_k = 8;
+
+static void custom_fn_simple(struct ggml_tensor * dst, const struct ggml_tensor * src, int ith, int nth, void * userdata) {
+    int * clru = (int *) userdata;
+    int ne0 = src->ne[0];
+    if(ith == 0) {
+      for (int i=0; i<src->ne[1]; i++) {
+        int *dst_data = (int *)((char *)dst->data + i * dst->nb[1]);
+
+        bool loaded = token_count % 2 == 0;
+        for (int64_t j = 0; j < top_k; j++) {
+            int data = dst_data[j];
+            bool found = false;
+            for (int64_t k = 0; k < max_lru; k++) {
+                if (clru[k] == 0 || clru[k] == data + 1) {
+                    for (int l = k; l > j; l--) {
+                        clru[l] = clru[l-1];
+                    }
+                    clru[j] = data + 1;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (loaded) {
+                    // just skip, put at the end of dst_data
+                    for (int l = j; l < ne0 - 1; l++) {
+                        dst_data[l] = dst_data[l+1];
+                    }
+                    dst_data[ne0 - 1] = data;
+                    j--;  // retry
+                } else {
+                    for (int l = max_lru - 1; l > j; l--) {
+                        clru[l] = clru[l-1];
+                    }
+                    clru[j] = data + 1;
+                    loaded = true;
+                }
+            }
+        }
+      }
+    }
+}
+
 int lru[61][128];  // 0 initialized, max_lru = 128, il: 3..60
+custom_fn_data fn_datas[61];
 
 static struct ggml_tensor * llm_build_moe_ffn(
         struct ggml_context * ctx,
@@ -539,12 +623,18 @@ llama_expert_gating_func_type gating_op,
     struct ggml_tensor * selected_experts_argsort = ggml_argsort(ctx, selection_probs, GGML_SORT_ORDER_DESC);
     cb(selected_experts_argsort, "ffn_moe_argsort", il);
     // Create a custom op that prints a debug message
+    fn_datas[il] = {
+        .clru = &lru[il][0],
+        .up_exps = up_exps,
+        .gate_exps = gate_exps,
+        .down_exps = down_exps
+    };
     selected_experts_argsort = ggml_map_custom1_inplace(
         ctx,
         selected_experts_argsort,
-        custom_fn,
+        custom_fn_simple,
         1,
-        (void *) &lru[il][0]
+        (void *) &lru[il][0]//,  &fn_datas[il]
     );
 
     struct ggml_tensor * selected_experts = ggml_view_4d(ctx, selected_experts_argsort,
@@ -10212,3 +10302,5 @@ void llama_perf_context_reset(struct llama_context * ctx) {
     ctx->t_eval_us   = ctx->n_eval = 0;
     ctx->t_p_eval_us = ctx->n_p_eval = 0;
 }
+
+
