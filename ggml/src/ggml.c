@@ -897,6 +897,40 @@ struct ggml_context_container {
 // data types
 //
 
+struct ggml_tensor * ggml_lru(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * lru,
+        bool loaded,
+        int top_k,
+        int max_lru) {
+
+    GGML_ASSERT(src != NULL);
+    GGML_ASSERT(lru != NULL);
+    GGML_ASSERT(lru->type == GGML_TYPE_I32);
+    GGML_ASSERT(top_k > 0);
+    GGML_ASSERT(max_lru > 0);
+
+    // Create a new tensor with the same shape as the source
+    struct ggml_tensor * result = ggml_dup_tensor(ctx, src);
+
+    // Set the operator type
+    result->op = GGML_OP_LRU;
+
+    // Set the source tensors
+    result->src[0] = src;  // Source tensor
+    result->src[1] = lru;  // LRU tensor to modify
+
+    // Store the parameters
+    struct ggml_lru_params params;
+    params.loaded = loaded;
+    params.top_k = top_k;
+    params.max_lru = max_lru;
+    ggml_set_op_params(result, &params, sizeof(struct ggml_lru_params));
+
+    return result;
+}
+
 static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "NONE",
 
@@ -990,9 +1024,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "CROSS_ENTROPY_LOSS",
     "CROSS_ENTROPY_LOSS_BACK",
     "OPT_STEP_ADAMW",
+
+    "LRU",
 };
 
-static_assert(GGML_OP_COUNT == 83, "GGML_OP_COUNT != 83");
+static_assert(GGML_OP_COUNT == 84, "GGML_OP_COUNT != 84");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1087,9 +1123,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "cross_entropy_loss(x,y)",
     "cross_entropy_loss_back(x,y)",
     "adamw(x)",
+    "lru(x)",
 };
 
-static_assert(GGML_OP_COUNT == 83, "GGML_OP_COUNT != 83");
+static_assert(GGML_OP_COUNT == 84, "GGML_OP_COUNT != 84");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 

@@ -12908,6 +12908,64 @@ static void ggml_compute_forward_opt_step_adamw(
             }
     }
 }
+
+static void ggml_compute_forward_lru(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    if (params->ith != 0) {
+        return;
+    }
+
+    const struct ggml_tensor * src = dst->src[0];
+    const struct ggml_tensor * cclru = dst->src[1];
+
+    GGML_ASSERT(ggml_is_contiguous(dst));
+    GGML_ASSERT(ggml_is_contiguous(src));
+    GGML_ASSERT(ggml_is_contiguous(cclru));
+    GGML_ASSERT(ggml_are_same_shape(src, dst));
+
+    int *clru = (int *)cclru->data;
+
+    struct ggml_lru_params * lparams = (struct ggml_lru_params *) dst->op_params;
+    printf("params.loaded: %d, params.top_k: %d, params.max_lru: %d\n", lparams->loaded, lparams->top_k, lparams->max_lru);
+    const int top_k = lparams->top_k;
+    const int max_lru = lparams->max_lru;
+
+    int ne0 = src->ne[0];
+      for (int i=0; i<src->ne[1]; i++) {
+        int *dst_data = (int *)((char *)dst->data + i * dst->nb[1]);
+        bool loaded = lparams->loaded;
+        for (int64_t j = 0; j < top_k; j++) {
+            int data = dst_data[j];
+            bool found = false;
+            for (int64_t k = 0; k < max_lru; k++) {
+                if (clru[k] == 0 || clru[k] == data + 1) {
+                    for (int l = k; l > j; l--) {
+                        clru[l] = clru[l-1];
+                    }
+                    clru[j] = data + 1;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (loaded) {
+                    // just skip, put at the end of dst_data
+                    for (int l = j; l < ne0 - 1; l++) {
+                        dst_data[l] = dst_data[l+1];
+                    }
+                    dst_data[ne0 - 1] = data;
+                    j--;  // retry
+                } else {
+                    for (int l = max_lru - 1; l > j; l--) {
+                        clru[l] = clru[l-1];
+                    }
+                    clru[j] = data + 1;
+                    loaded = true;
+                }
+            }
+      }
+    }
+}
+
 /////////////////////////////////
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
@@ -13273,6 +13331,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 ggml_compute_forward_opt_step_adamw(params, tensor);
             }
             break;
+        case GGML_OP_LRU:
+            {
+                ggml_compute_forward_lru(params, tensor);
+            }
         case GGML_OP_NONE:
             {
                 // nop
@@ -13512,6 +13574,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_MAP_CUSTOM1_F32:
         case GGML_OP_MAP_CUSTOM2_F32:
         case GGML_OP_MAP_CUSTOM3_F32:
+        case GGML_OP_LRU:
             {
                 n_tasks = 1;
             } break;

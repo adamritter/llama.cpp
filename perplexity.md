@@ -73,3 +73,13 @@ bool loaded = count % 2 == 0 again: 1.93 18 min
 -- loading 1 expert / token from 256: 132 GB -> 0.5 GB, can do 10 token/s, not too strong, better every second token
 - 8 tokens is 8ms, can transfer 10 tokens in 80ms, should be really easy
 - 8 mb / layer, 60 layers -> 500MB / expert
+
+-- cool, now I know that it works, just not the best way toimplement it.
+
+one thing I could do  is to think about simple ops that can implement it. First just in CPU.
+
+- one is getting argmaxes, last LRU state (persistent 128 entries + 1 index), 1 bool (loaded=true/false) and computes new experts to load in LRU position (8 elems). it also should update lru state + 1 index and output a 128 elem ,,to load'' array with mostly 0s, others are index+1 of expert indices to load (1..256)... with maximum 8 non-zero elems (another option is 8 pairs of to load and where to load with optional emtpy elements)
+
+---
+
+create

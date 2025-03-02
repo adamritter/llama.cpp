@@ -520,8 +520,28 @@ extern "C" {
         GGML_OP_CROSS_ENTROPY_LOSS_BACK,
         GGML_OP_OPT_STEP_ADAMW,
 
+        GGML_OP_LRU,
+
         GGML_OP_COUNT,
     };
+
+
+    // LRU operator parameters structure
+    struct ggml_lru_params {
+        bool loaded;
+        int top_k;
+        int max_lru;
+    };
+
+
+    // Declaration for the LRU operator
+    GGML_API struct ggml_tensor * ggml_lru(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * lru,
+        bool loaded,
+        int top_k,
+        int max_lru);
 
     enum ggml_unary_op {
         GGML_UNARY_OP_ABS,
