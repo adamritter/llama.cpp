@@ -629,13 +629,17 @@ llama_expert_gating_func_type gating_op,
         .gate_exps = gate_exps,
         .down_exps = down_exps
     };
-    selected_experts_argsort = ggml_map_custom1_inplace(
-        ctx,
-        selected_experts_argsort,
-        custom_fn_simple,
-        1,
-        (void *) &lru[il][0]//,  &fn_datas[il]
-    );
+    // selected_experts_argsort = ggml_map_custom1_inplace(
+    //     ctx,
+    //     selected_experts_argsort,
+    //     custom_fn_simple,
+    //     1,
+    //     (void *) &lru[il][0]//,  &fn_datas[il]
+    // );
+
+    struct ggml_tensor * tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, max_lru);
+    tensor->data = &lru[il][0];
+    selected_experts_argsort = ggml_lru(ctx, selected_experts_argsort, tensor, token_count % 2 == 0, 8);
 
     struct ggml_tensor * selected_experts = ggml_view_4d(ctx, selected_experts_argsort,
                 n_expert_used, selected_experts_argsort->ne[1], selected_experts_argsort->ne[2], selected_experts_argsort->ne[3],

@@ -12925,9 +12925,10 @@ static void ggml_compute_forward_lru(struct ggml_compute_params * params, struct
     int *clru = (int *)cclru->data;
 
     struct ggml_lru_params * lparams = (struct ggml_lru_params *) dst->op_params;
-    printf("params.loaded: %d, params.top_k: %d, params.max_lru: %d\n", lparams->loaded, lparams->top_k, lparams->max_lru);
+    // printf("params.loaded: %d, params.top_k: %d, cclru size: %d\n", lparams->loaded, lparams->top_k, cclru->ne[0]);
+    // return;
     const int top_k = lparams->top_k;
-    const int max_lru = lparams->max_lru;
+    const int max_lru = cclru->ne[0];
 
     int ne0 = src->ne[0];
       for (int i=0; i<src->ne[1]; i++) {
@@ -13335,6 +13336,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_lru(params, tensor);
             }
+            break;
         case GGML_OP_NONE:
             {
                 // nop

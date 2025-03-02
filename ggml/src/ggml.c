@@ -902,17 +902,15 @@ struct ggml_tensor * ggml_lru(
         struct ggml_tensor  * src,
         struct ggml_tensor  * lru,
         bool loaded,
-        int top_k,
-        int max_lru) {
+        int top_k) {
 
     GGML_ASSERT(src != NULL);
     GGML_ASSERT(lru != NULL);
     GGML_ASSERT(lru->type == GGML_TYPE_I32);
     GGML_ASSERT(top_k > 0);
-    GGML_ASSERT(max_lru > 0);
 
     // Create a new tensor with the same shape as the source
-    struct ggml_tensor * result = ggml_dup_tensor(ctx, src);
+    struct ggml_tensor * result = ggml_view_tensor(ctx, src);
 
     // Set the operator type
     result->op = GGML_OP_LRU;
@@ -925,8 +923,7 @@ struct ggml_tensor * ggml_lru(
     struct ggml_lru_params params;
     params.loaded = loaded;
     params.top_k = top_k;
-    params.max_lru = max_lru;
-    ggml_set_op_params(result, &params, sizeof(struct ggml_lru_params));
+    ggml_set_op_params(result, &params, sizeof(params));
 
     return result;
 }

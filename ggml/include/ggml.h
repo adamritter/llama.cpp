@@ -530,7 +530,6 @@ extern "C" {
     struct ggml_lru_params {
         bool loaded;
         int top_k;
-        int max_lru;
     };
 
 
@@ -540,8 +539,7 @@ extern "C" {
         struct ggml_tensor  * src,
         struct ggml_tensor  * lru,
         bool loaded,
-        int top_k,
-        int max_lru);
+        int top_k);
 
     enum ggml_unary_op {
         GGML_UNARY_OP_ABS,
