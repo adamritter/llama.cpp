@@ -12926,7 +12926,6 @@ static void ggml_compute_forward_lru(struct ggml_compute_params * params, struct
 
     struct ggml_lru_params * lparams = (struct ggml_lru_params *) dst->op_params;
     // printf("params.loaded: %d, params.top_k: %d, cclru size: %d\n", lparams->loaded, lparams->top_k, cclru->ne[0]);
-    // return;
     const int top_k = lparams->top_k;
     const int max_lru = cclru->ne[0];
 

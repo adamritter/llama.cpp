@@ -295,7 +295,7 @@ void dequantize_q2_K(device const block_q2_K *xb, short il, thread type4x4 & reg
 }
 
 template <typename type4x4>
-void dequantize_q3_K(device const block_q3_K *xb, short il, thread type4x4 & reg) {
+void dequantize_q3_K(device const block_q3_K * xb, short il, thread type4x4 & reg) {
     const half d_all = xb->d;
     device const uint8_t * q = (device const uint8_t *)xb->qs;
     device const uint8_t * h = (device const uint8_t *)xb->hmask;
@@ -1430,6 +1430,68 @@ kernel void kernel_argmax(
     }
 
     dst[tgpig] = arg_val;
+}
+
+
+kernel void kernel_lru(
+        device int32_t * src      [[buffer(0)]],
+        device       int32_t   * lru      [[buffer(1)]],
+        constant    int64_t & nexperts,
+        constant    int64_t & bs,
+        constant    int64_t & max_lru,
+        constant    int64_t & loaded0,
+        constant    int64_t & top_k,
+        uint tid [[thread_position_in_grid]]) {
+    // src[0] = nexperts;
+    // src[1] = bs;
+    // src[2] = max_lru;
+    // src[3] = loaded0;
+    // src[4] = top_k;
+    // return;
+
+    if (tid > 0) {
+    return;
+    }
+
+    bool loaded = loaded0;
+    device int * clru = lru;
+
+    for (int i = 0; i < bs; i++) {
+        device int * src_data = (device int *)((device char *)src + i * max_lru);
+
+        for (int64_t j = 0; j < top_k; j++) {
+            int data = src_data[j];
+            bool found = false;
+
+            for (int64_t k = 0; k < max_lru; k++) {
+                if (clru[k] == 0 || clru[k] == data + 1) {
+                    for (int l = k; l > j; l--) {
+                        clru[l] = clru[l-1];
+                    }
+                    clru[j] = data + 1;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                if (loaded) {
+                    // just skip, put at the end of dst_data
+                    for (int l = j; l < max_lru - 1; l++) {
+                        src_data[l] = src_data[l+1];
+                    }
+                    src_data[max_lru - 1] = data;
+                    j--;  // retry
+                } else {
+                    for (int l = max_lru - 1; l > j; l--) {
+                        clru[l] = clru[l-1];
+                    }
+                    clru[j] = data + 1;
+                    loaded = true;
+                }
+            }
+        }
+    }
 }
 
 kernel void kernel_norm(
@@ -4518,8 +4580,8 @@ void kernel_mul_mv_q3_K_f32_impl(
     const int l0  = n*ir;
 
     // One would think that the Metal compiler would figure out that ip and il can only have
-    // 4 possible states, and optimize accordingly. Well, no. It needs help, and we do it
-    // with these two tales.
+    // 4 possible states, and optimize accordingly. Well, no. It needs help, and we do it with
+    // these two tales.
     //
     // Possible masks for the high bit
     const ushort4 mm[4] = {{0x0001, 0x0100, 0x0002, 0x0200},  // ip = 0, il = 0
@@ -6562,7 +6624,7 @@ kernel void kernel_mul_mv_id(
         device       char * dst,
         device const char * ids,
         threadgroup  char * shmem [[threadgroup(0)]],
-        uint3  tgpig[[threadgroup_position_in_grid]],
+        uint3  tgpig[[thread_position_in_grid]],
         ushort tiitg[[thread_index_in_threadgroup]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {

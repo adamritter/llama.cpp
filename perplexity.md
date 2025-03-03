@@ -83,3 +83,5 @@ one thing I could do  is to think about simple ops that can implement it. First 
 ---
 
 create
+
+-DCMAKE_BUILD_TYPE=Debug

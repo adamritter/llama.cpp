@@ -416,6 +416,7 @@ enum ggml_metal_kernel_type {
     GGML_METAL_KERNEL_TYPE_POOL_2D_AVG_F32,
     GGML_METAL_KERNEL_TYPE_POOL_2D_MAX_F32,
     GGML_METAL_KERNEL_TYPE_ARGMAX,
+    GGML_METAL_KERNEL_TYPE_LRU,
 
     GGML_METAL_KERNEL_TYPE_COUNT
 };
@@ -1021,6 +1022,7 @@ static struct ggml_backend_metal_context * ggml_metal_init(ggml_backend_dev_t de
         GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_ARGMAX,                        argmax,                         true);
         GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_POOL_2D_AVG_F32,               pool_2d_avg_f32,                true);
         GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_POOL_2D_MAX_F32,               pool_2d_max_f32,                true);
+        GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_LRU,                           lru,                            true);
     }
 
     [metal_library release];
@@ -1161,7 +1163,6 @@ static bool ggml_metal_supports_op(const struct ggml_backend_metal_device_contex
     const bool has_simdgroup_mm        = ctx_dev->has_simdgroup_mm;
     const bool has_simdgroup_reduction = ctx_dev->has_simdgroup_reduction;
     const bool use_bfloat              = ctx_dev->use_bfloat;
-
     if (!use_bfloat) {
         for (size_t i = 0, n = 3; i < n; ++i) {
             if (op->src[i] != NULL && op->src[i]->type == GGML_TYPE_BF16) {
@@ -1212,6 +1213,8 @@ static bool ggml_metal_supports_op(const struct ggml_backend_metal_device_contex
         case GGML_OP_RMS_NORM:
             return has_simdgroup_reduction && (op->ne[0] % 4 == 0 && ggml_is_contiguous_1(op->src[0]));
         case GGML_OP_ARGMAX:
+        case GGML_OP_LRU:
+            printf("ggml_metal_supports_op: op=%d, GGML_OP_LRU\n", op->op);
             return true;
         case GGML_OP_NORM:
             return has_simdgroup_reduction && (op->ne[0] % 4 == 0 && ggml_is_contiguous_1(op->src[0]));
@@ -1347,6 +1350,8 @@ static void ggml_metal_encode_node(
             } break;
     }
 
+
+
     if (!ggml_metal_supports_op(ctx_dev, dst)) {
         GGML_LOG_ERROR("%s: error: unsupported op '%s'\n", __func__, ggml_op_desc(dst));
         GGML_ABORT("unsupported op");
@@ -1395,6 +1400,7 @@ static void ggml_metal_encode_node(
     const enum ggml_type src0t = src0 ? src0->type : GGML_TYPE_COUNT;
     const enum ggml_type src1t = src1 ? src1->type : GGML_TYPE_COUNT;
     const enum ggml_type dstt  = dst  ? dst->type  : GGML_TYPE_COUNT;
+
 
     size_t offs_src0 = 0;
     size_t offs_src1 = 0;
@@ -4113,6 +4119,72 @@ static void ggml_metal_encode_node(
                 [encoder setThreadgroupMemoryLength:32*sizeof(int32_t) atIndex:1];
 
                 [encoder dispatchThreadgroups:MTLSizeMake(nrows, 1, 1) threadsPerThreadgroup:MTLSizeMake(nth, 1, 1)];
+            } break;
+        case GGML_OP_LRU:
+            {
+                printf("Running LRU op\n");
+                GGML_LOG_INFO("%s: running LRU op, src0=%p, src1=%p, dst=%p\n", __func__, src0, src1, dst);
+
+                GGML_ASSERT(src0->type == GGML_TYPE_I32);
+                GGML_ASSERT(ggml_is_contiguous_1(src0));
+                GGML_ASSERT(nb00 == ggml_type_size(src0->type));
+                GGML_ASSERT(ggml_is_contiguous(src0));
+                GGML_ASSERT(ggml_is_contiguous(src1));
+
+                const int32_t * opts = dst->op_params;
+                const bool loaded = opts[0];
+                const int top_k = opts[1];
+
+                GGML_LOG_INFO("%s: LRU params: loaded=%d, top_k=%d, ne00=%lld, nb01=%lld\n",
+                              __func__, loaded, top_k, (long long)ne00, (long long)nb01);
+                GGML_LOG_INFO("%s: id_src0=%p, id_src1=%p, offs_src0=%zu, offs_src1=%zu\n",
+                              __func__, id_src0, id_src1, offs_src0, offs_src1);
+
+                id<MTLComputePipelineState> pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_LRU].pipeline;
+                GGML_LOG_INFO("%s: LRU pipeline=%p\n", __func__, pipeline);
+
+                if (pipeline == nil) {
+                    GGML_LOG_ERROR("%s: error: LRU pipeline is nil\n", __func__);
+                    break;
+                }
+
+                @try {
+                    [encoder setComputePipelineState:pipeline];
+                    GGML_LOG_INFO("%s: set pipeline state\n", __func__);
+
+                    [encoder setBuffer:id_src0 offset:offs_src0 atIndex:0];
+                    GGML_LOG_INFO("%s: set buffer 0\n", __func__);
+
+                    [encoder setBuffer:id_src1 offset:offs_src1 atIndex:1];
+                    GGML_LOG_INFO("%s: set buffer 1\n", __func__);
+
+                    [encoder setBytes:&ne00 length:sizeof(int64_t) atIndex:2];
+                    GGML_LOG_INFO("%s: set bytes for ne00 as nexperts\n", __func__);
+
+                    [encoder setBytes:&ne01 length:sizeof(int64_t) atIndex:3];
+                    GGML_LOG_INFO("%s: set bytes for ne01 as bs\n", __func__);
+
+                    [encoder setBytes:&ne10 length:sizeof(uint64_t) atIndex:4];
+                    GGML_LOG_INFO("%s: set bytes for ne10 as max_lru\n", __func__);
+
+                    [encoder setBytes:&loaded length:sizeof(bool) atIndex:5];
+                    GGML_LOG_INFO("%s: set bytes for loaded\n", __func__);
+
+                    [encoder setBytes:&top_k length:sizeof(int) atIndex:6];
+                    GGML_LOG_INFO("%s: set bytes for top_k\n", __func__);
+
+                    [encoder setThreadgroupMemoryLength:32*sizeof(int32_t) atIndex:0];
+                    GGML_LOG_INFO("%s: set threadgroup memory 0\n", __func__);
+
+                    [encoder setThreadgroupMemoryLength:32*sizeof(int32_t) atIndex:1];
+                    GGML_LOG_INFO("%s: set threadgroup memory 1\n", __func__);
+
+                    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                    GGML_LOG_INFO("%s: dispatched thread groups\n", __func__);
+                }
+                @catch (NSException *exception) {
+                    GGML_LOG_ERROR("%s: exception during LRU op: %s\n", __func__, [[exception description] UTF8String]);
+                }
             } break;
        default:
             {
